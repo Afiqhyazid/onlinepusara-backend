@@ -1,3 +1,4 @@
+// routes/payment.js
 const express = require('express');
 const axios = require('axios');
 const router = express.Router();
@@ -43,6 +44,11 @@ router.get('/success', (req, res) => {
 router.post('/callback', (req, res) => {
   console.log('📩 Payment callback received:', req.body);
   res.sendStatus(200);
+});
+
+// 🔍 Test route to confirm API works
+router.get('/test', (req, res) => {
+  res.json({ message: 'Payment API is working ✅' });
 });
 
 module.exports = router;
