@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Payment Complete</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            display: inline-block;
+        }
+        h1 { color: #4CAF50; }
+        p { font-size: 1.1em; }
+        a.button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 25px;
+            background-color: #4CAF50;
+            color: #fff;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        a.button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Payment Successful!</h1>
+        <p>Thank you for your payment. Your reservation has been recorded.</p>
+        <p>You will be redirected to the app shortly...</p>
+        <a class="button" href="myapp://payment-success">Open App Now</a>
+    </div>
+
+    <script>
+        // Auto-redirect to app after 3 seconds
+        setTimeout(function() {
+            window.location.href = "myapp://payment-success";
+        }, 3000);
+    </script>
+</body>
+</html>
