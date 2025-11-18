@@ -4,12 +4,15 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+
+// ✅ Correct path for routes
 const paymentRoutes = require('./routes/payment.js');
 
 const app = express();
 
 // Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // For ToyyibPay callback (URL-encoded form data)
 app.use(cors());
 
 // Serve static HTML pages from "public" folder
@@ -27,9 +30,14 @@ console.log("TOYYIBPAY_BASE_URL:", process.env.TOYYIBPAY_BASE_URL || 'NOT SET');
 // Routes
 app.use('/api/payment', paymentRoutes);
 
-// Optional: Root test route
+// Optional root route for testing
 app.get('/', (req, res) => {
   res.send('✅ OnlinePusara ToyyibPay Backend is running successfully');
+});
+
+// Fallback for 404s
+app.use((req, res) => {
+  res.status(404).send('❌ Route not found');
 });
 
 // Start server
