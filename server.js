@@ -5,8 +5,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
-// ✅ Correct path for routes
-const paymentRoutes = require('./routes/payment.js');
+// ✅ Make sure the path is correct relative to server.js
+const paymentRoutes = require(path.join(__dirname, 'routes', 'payment.js'));
 
 const app = express();
 
