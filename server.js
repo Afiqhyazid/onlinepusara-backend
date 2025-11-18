@@ -5,20 +5,20 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
-// ✅ Make sure the path is correct relative to server.js
-const paymentRoutes = require(path.join(__dirname, 'routes', 'payment.js'));
+// ✅ Correct path relative to server.js
+const paymentRoutes = require('./routes/payment.js');
 
 const app = express();
 
 // Middleware
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // For ToyyibPay callback (URL-encoded form data)
+app.use(express.urlencoded({ extended: true })); // For ToyyibPay callback
 app.use(cors());
 
 // Serve static HTML pages from "public" folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Debug environment variables
+// Debug environment variables for ToyyibPay only
 console.log("✅ Loaded environment variables:");
 console.log(
   "TOYYIBPAY_API_KEY:",
