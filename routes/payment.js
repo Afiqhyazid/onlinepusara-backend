@@ -1,122 +1,39 @@
-// routes/payment.js
-// Express routes for ToyyibPay payment operations (Render-ready, HTML pages)
+// server.js - Render-ready version (ToyyibPay + JSON + HTML fallback)
+require('dotenv').config();
 
 const express = require('express');
-const router = express.Router();
-const axios = require('axios');
+const cors = require('cors');
 const path = require('path');
+const paymentRoutes = require('./routes/payment.js');
 
-/**
- * POST /api/payment/create
- * Create a ToyyibPay bill for a reservation
- */
-router.post('/create', async (req, res) => {
-  try {
-    const { reservation_id, name, email, phone, amount } = req.body;
+const app = express();
 
-    console.log('[PaymentRoutes] Incoming request body:', JSON.stringify(req.body, null, 2));
+// Middleware
+app.use(express.json());
+app.use(cors());
 
-    // Validate required fields
-    if (!reservation_id || !name || !email || !phone || !amount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required fields: reservation_id, name, email, phone, amount'
-      });
-    }
+// Serve static HTML pages from "public" folder
+app.use(express.static(path.join(__dirname, 'public')));
 
-    // Validate reservation_id
-    const reservationIdInt = parseInt(reservation_id, 10);
-    if (Number.isNaN(reservationIdInt) || reservationIdInt <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid reservation_id. Must be a positive integer.'
-      });
-    }
+// Debug environment variables
+console.log("✅ Loaded environment variables:");
+console.log(
+  "TOYYIBPAY_API_KEY:",
+  process.env.TOYYIBPAY_API_KEY ? process.env.TOYYIBPAY_API_KEY.substring(0, 10) + '...' : 'NOT SET'
+);
+console.log("TOYYIBPAY_CATEGORY_CODE:", process.env.TOYYIBPAY_CATEGORY_CODE || 'NOT SET');
+console.log("TOYYIBPAY_BASE_URL:", process.env.TOYYIBPAY_BASE_URL || 'NOT SET');
 
-    // Validate amount
-    const amountFloat = parseFloat(amount);
-    if (Number.isNaN(amountFloat) || amountFloat <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid amount. Must be a positive number.'
-      });
-    }
+// Routes
+app.use('/api/payment', paymentRoutes);
 
-    // Environment variables
-    const TOYYIBPAY_SECRET_KEY = process.env.TOYYIBPAY_API_KEY?.trim();
-    const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE?.trim();
-    const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL?.trim();
-
-    if (!TOYYIBPAY_SECRET_KEY || !TOYYIBPAY_CATEGORY_CODE || !TOYYIBPAY_BASE_URL) {
-      return res.status(500).json({
-        success: false,
-        message: 'ToyyibPay configuration missing'
-      });
-    }
-
-    // Prepare ToyyibPay request
-    const billAmountInSen = Math.round(amountFloat * 100);
-    const billName = `Reservation #${reservationIdInt}`.substring(0, 30);
-    const billDescription = `Payment for Reservation #${reservationIdInt} (RM ${amountFloat.toFixed(2)})`;
-
-    const toyyibPayParams = new URLSearchParams({
-      userSecretKey: TOYYIBPAY_SECRET_KEY,
-      categoryCode: TOYYIBPAY_CATEGORY_CODE,
-      billName,
-      billDescription,
-      billPriceSetting: '1',
-      billPayorInfo: '1',
-      billAmount: billAmountInSen.toString(),
-      billTo: name.trim(),
-      billEmail: email.trim(),
-      billPhone: phone.trim(),
-      billReturnUrl: "https://onlinepusara-backend.onrender.com/api/payment/return",
-      billCallbackUrl: "https://onlinepusara-backend.onrender.com/api/payment/callback"
-    });
-
-    const toyyibPayUrl = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
-
-    const toyyibPayResponse = await axios.post(toyyibPayUrl, toyyibPayParams.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      timeout: 30000
-    });
-
-    if (!Array.isArray(toyyibPayResponse.data) || !toyyibPayResponse.data[0]?.BillCode) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to create ToyyibPay bill: Invalid response'
-      });
-    }
-
-    const billCode = toyyibPayResponse.data[0].BillCode;
-    const url = `${TOYYIBPAY_BASE_URL}/${billCode}`;
-
-    return res.status(200).json({
-      success: true,
-      billcode: billCode,
-      url
-    });
-
-  } catch (axiosError) {
-    console.error('[PaymentRoutes] Error calling ToyyibPay API:', axiosError.message);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to create ToyyibPay bill',
-      details: axiosError.response?.data || axiosError.message
-    });
-  }
+// Optional: Root test route
+app.get('/', (req, res) => {
+  res.send('✅ OnlinePusara ToyyibPay Backend is running successfully');
 });
 
-// 🔥 Serve HTML page for Return URL
-router.get('/return', (req, res) => {
-  console.log("🎉 [RETURN] User returned from ToyyibPay:", req.query);
-  res.sendFile(path.join(__dirname, '..', 'public', 'return.html'));
+// Start server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on Render at port ${PORT}`);
 });
-
-// 🔥 Serve HTML page for Callback URL
-router.post('/callback', (req, res) => {
-  console.log("📥 [CALLBACK] ToyyibPay callback received:", req.body);
-  res.sendFile(path.join(__dirname, '..', 'public', 'callback.html'));
-});
-
-module.exports = router;
