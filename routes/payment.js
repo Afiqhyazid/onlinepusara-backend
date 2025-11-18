@@ -12,6 +12,35 @@ const SUPABASE_TABLE = process.env.SUPABASE_PAYMENT_TABLE || 'payment_orders';
 // Middleware to parse URL-encoded body (for ToyyibPay callback)
 router.use(express.urlencoded({ extended: true }));
 
+const deriveToyyibErrorMessage = (details) => {
+  if (!details) {
+    return null;
+  }
+
+  if (typeof details === 'string') {
+    return details;
+  }
+
+  if (Array.isArray(details) && details.length > 0) {
+    const first = details[0];
+    if (!first) return null;
+    if (typeof first === 'string') return first;
+    if (first.msg) return first.msg;
+    if (first.Msg) return first.Msg;
+    if (first.message) return first.message;
+  }
+
+  if (details.msg) return details.msg;
+  if (details.Msg) return details.Msg;
+  if (details.message) return details.message;
+
+  try {
+    return JSON.stringify(details);
+  } catch (err) {
+    return null;
+  }
+};
+
 /**
  * POST /api/payment/create
  * Create a ToyyibPay bill for a reservation
@@ -133,11 +162,23 @@ router.post('/create', async (req, res) => {
     return res.status(200).json({ success: true, billCode, paymentUrl });
 
   } catch (error) {
-    console.error('[PaymentRoutes] Error:', error.message);
+    const errorDetails = error.response?.data;
+    const errorStatus = error.response?.status;
+    const friendlyMessage =
+      deriveToyyibErrorMessage(errorDetails) ||
+      error.message ||
+      'Failed to create ToyyibPay bill';
+
+    console.error('[PaymentRoutes] ToyyibPay createBill failed', {
+      status: errorStatus || 'unknown',
+      message: error.message,
+      details: errorDetails || null
+    });
+
     return res.status(500).json({
       success: false,
-      message: 'Failed to create ToyyibPay bill',
-      details: error.response?.data || error.message
+      message: friendlyMessage,
+      details: errorDetails || error.message
     });
   }
 });
@@ -278,6 +319,8 @@ router.get('/summary/:reservation_id', async (req, res) => {
       summary: {
         reservation_id: data.reservation_id,
         name: data.name,
+        email: data.email || null,
+        phone: data.phone || null,
         amount: data.amount,
         bill_code: data.bill_code,
         status: data.status,
