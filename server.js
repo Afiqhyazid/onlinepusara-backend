@@ -1,4 +1,4 @@
-// server.js - Render-ready version (ToyyibPay + HTML pages)
+// server.js - Render-ready version (ToyyibPay + JSON + HTML fallback)
 require('dotenv').config();
 
 const express = require('express');
@@ -27,23 +27,7 @@ console.log("TOYYIBPAY_BASE_URL:", process.env.TOYYIBPAY_BASE_URL || 'NOT SET');
 // Routes
 app.use('/api/payment', paymentRoutes);
 
-// 👉 NEW: Return route - serve HTML page
-app.get('/api/payment/return', (req, res) => {
-  console.log("🎉 [RETURN] User returned from ToyyibPay:", req.query);
-
-  // Serve return.html from public folder
-  res.sendFile(path.join(__dirname, 'public', 'return.html'));
-});
-
-// 👉 NEW: Callback route - serve HTML page
-app.post('/api/payment/callback', (req, res) => {
-  console.log("📥 [CALLBACK] ToyyibPay callback received:", req.body);
-
-  // Serve callback.html from public folder
-  res.sendFile(path.join(__dirname, 'public', 'callback.html'));
-});
-
-// Default route
+// Optional: Root test route
 app.get('/', (req, res) => {
   res.send('✅ OnlinePusara ToyyibPay Backend is running successfully');
 });
