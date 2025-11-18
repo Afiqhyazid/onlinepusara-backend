@@ -5,6 +5,9 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const path = require('path');
+const { supabase } = require('../supabaseClient');
+
+const SUPABASE_TABLE = process.env.SUPABASE_PAYMENT_TABLE || 'payment_orders';
 
 // Middleware to parse URL-encoded body (for ToyyibPay callback)
 router.use(express.urlencoded({ extended: true }));
@@ -15,7 +18,7 @@ router.use(express.urlencoded({ extended: true }));
  */
 router.post('/create', async (req, res) => {
   try {
-    const { reservation_id, name, email, phone, amount } = req.body;
+    const { reservation_id, name, email, phone, amount, items } = req.body;
 
     if (!reservation_id || !name || !email || !phone || !amount) {
       return res.status(400).json({
@@ -46,6 +49,43 @@ router.post('/create', async (req, res) => {
     const billName = `Reservation #${reservationIdInt}`.substring(0, 30);
     const billDescription = `Payment for Reservation #${reservationIdInt} (RM ${amountFloat.toFixed(2)})`;
 
+    const nowIso = new Date().toISOString();
+
+    if (!supabase) {
+      console.error('[PaymentRoutes] Supabase client not initialized');
+      return res.status(500).json({ success: false, message: 'Supabase client is not initialized' });
+    }
+
+    console.log('[PaymentRoutes] Inserting pending order into Supabase:', {
+      reservation_id: reservationIdInt,
+      name,
+      email,
+      phone,
+      amount: amountFloat,
+      items: items || null
+    });
+
+    const { data: pendingOrder, error: insertError } = await supabase
+      .from(SUPABASE_TABLE)
+      .insert({
+        reservation_id: reservationIdInt,
+        name: name.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        amount: amountFloat,
+        items: items || null,
+        status: 'pending',
+        created_at: nowIso,
+        updated_at: nowIso
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('[PaymentRoutes] Failed to insert pending order into Supabase:', insertError);
+      return res.status(500).json({ success: false, message: 'Failed to store payment record' });
+    }
+
     const toyyibPayParams = new URLSearchParams({
       userSecretKey: TOYYIBPAY_SECRET_KEY,
       categoryCode: TOYYIBPAY_CATEGORY_CODE,
@@ -75,6 +115,21 @@ router.post('/create', async (req, res) => {
     const billCode = toyyibPayResponse.data[0].BillCode;
     const paymentUrl = `${TOYYIBPAY_BASE_URL}/${billCode}`;
 
+    console.log('[PaymentRoutes] Updating Supabase record with bill code:', billCode);
+
+    const { error: updateError } = await supabase
+      .from(SUPABASE_TABLE)
+      .update({
+        bill_code: billCode,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', pendingOrder.id);
+
+    if (updateError) {
+      console.error('[PaymentRoutes] Failed to update bill code in Supabase:', updateError);
+      // Continue even if update fails to avoid blocking payment
+    }
+
     return res.status(200).json({ success: true, billCode, paymentUrl });
 
   } catch (error) {
@@ -96,7 +151,36 @@ router.get('/return', async (req, res) => {
 
   console.log("🎉 [RETURN] User returned from ToyyibPay:", req.query);
 
-  // Optional: update your database here if needed
+  if (billCode && supabase) {
+    const statusMap = {
+      '1': 'success',
+      '2': 'failed',
+      '3': 'pending'
+    };
+    const normalizedStatus = statusMap[statusId] || 'unknown';
+
+    console.log('[PaymentRoutes] Updating Supabase via return endpoint:', {
+      billCode,
+      status: normalizedStatus,
+      transaction_id
+    });
+
+    const { error: returnUpdateError } = await supabase
+      .from(SUPABASE_TABLE)
+      .update({
+        status: normalizedStatus,
+        message: msg || null,
+        transaction_id: transaction_id || null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('bill_code', billCode);
+
+    if (returnUpdateError) {
+      console.error('[PaymentRoutes] Failed to update Supabase on return:', returnUpdateError);
+    }
+  } else {
+    console.warn('[PaymentRoutes] Missing billCode or Supabase client during return update.');
+  }
 
   // Respond JSON for Android app
   res.json({
@@ -124,10 +208,95 @@ router.post('/callback', async (req, res) => {
     statusId, billCode, order_id, msg, transaction_id, amount
   });
 
-  // Optional: update database here
+  if (billCode && supabase) {
+    const statusMap = {
+      '1': 'success',
+      '2': 'failed',
+      '3': 'pending'
+    };
+    const normalizedStatus = statusMap[statusId] || 'unknown';
+
+    console.log('[PaymentRoutes] Updating Supabase via callback endpoint:', {
+      billCode,
+      status: normalizedStatus,
+      transaction_id
+    });
+
+    const { error: callbackUpdateError } = await supabase
+      .from(SUPABASE_TABLE)
+      .update({
+        status: normalizedStatus,
+        message: msg || null,
+        transaction_id: transaction_id || null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('bill_code', billCode);
+
+    if (callbackUpdateError) {
+      console.error('[PaymentRoutes] Failed to update Supabase on callback:', callbackUpdateError);
+    }
+  } else {
+    console.warn('[PaymentRoutes] Missing billCode or Supabase client during callback update.');
+  }
 
   // Respond RECEIVEOK to ToyyibPay
   res.status(200).send("RECEIVEOK");
+});
+
+/**
+ * GET /api/payment/summary/:reservation_id
+ * Fetch payment summary from Supabase
+ */
+router.get('/summary/:reservation_id', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase client is not initialized' });
+    }
+
+    const reservationIdInt = parseInt(req.params.reservation_id, 10);
+    if (Number.isNaN(reservationIdInt) || reservationIdInt <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid reservation_id' });
+    }
+
+    console.log('[PaymentRoutes] Fetching payment summary from Supabase:', reservationIdInt);
+
+    const { data, error } = await supabase
+      .from(SUPABASE_TABLE)
+      .select('reservation_id,name,email,phone,amount,items,bill_code,status,transaction_id,created_at,updated_at,message')
+      .eq('reservation_id', reservationIdInt)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error) {
+      console.error('[PaymentRoutes] Supabase summary fetch error:', error);
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    return res.json({
+      success: true,
+      summary: {
+        reservation_id: data.reservation_id,
+        name: data.name,
+        amount: data.amount,
+        bill_code: data.bill_code,
+        status: data.status,
+        transaction_id: data.transaction_id,
+        created_at: data.created_at,
+        updated_at: data.updated_at,
+        items: data.items || null,
+        message: data.message || null
+      }
+    });
+
+  } catch (error) {
+    console.error('[PaymentRoutes] Unexpected error fetching summary:', error.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payment summary',
+      details: error.message
+    });
+  }
 });
 
 module.exports = router;
