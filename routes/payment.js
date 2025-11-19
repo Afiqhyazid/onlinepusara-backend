@@ -5,12 +5,17 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const path = require('path');
+const multer = require('multer');
 const { supabase } = require('../supabaseClient');
 
 const SUPABASE_TABLE = process.env.SUPABASE_PAYMENT_TABLE || 'payment_orders';
 
-// Middleware to parse URL-encoded body (for ToyyibPay callback)
+// Middleware to parse URL-encoded body (for ToyyibPay return)
 router.use(express.urlencoded({ extended: true }));
+
+// Multer middleware for parsing multipart/form-data (for ToyyibPay callback)
+// No storage needed, just parsing
+const upload = multer();
 
 const deriveToyyibErrorMessage = (details) => {
   if (!details) {
@@ -236,14 +241,15 @@ router.get('/return', async (req, res) => {
 /**
  * POST /api/payment/callback
  * Server-to-server notification from ToyyibPay
+ * ToyyibPay sends multipart/form-data, so we use multer to parse it
  */
-router.post('/callback', async (req, res) => {
+router.post('/callback', upload.any(), async (req, res) => {
   // Log raw request for debugging
   console.log("📥 [CALLBACK] Raw request received:");
   console.log("  - Content-Type:", req.headers['content-type']);
   console.log("  - req.body:", JSON.stringify(req.body));
   console.log("  - req.query:", JSON.stringify(req.query));
-  console.log("  - req.rawBody (if available):", typeof req.rawBody !== 'undefined' ? req.rawBody : 'N/A');
+  console.log("  - req.files (multer):", req.files ? JSON.stringify(req.files) : 'N/A');
 
   // Try multiple ways to extract data (ToyyibPay may send in different formats)
   const statusId = req.body?.statusId || req.body?.StatusId || req.query?.statusId || req.query?.StatusId;
