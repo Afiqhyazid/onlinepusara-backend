@@ -238,46 +238,68 @@ router.get('/return', async (req, res) => {
  * Server-to-server notification from ToyyibPay
  */
 router.post('/callback', async (req, res) => {
-  const statusId = req.body.statusId || req.query.statusId;
-  const billCode = req.body.billCode || req.query.billCode;
-  const order_id = req.body.order_id || req.query.order_id;
-  const msg = req.body.msg || req.query.msg;
-  const transaction_id = req.body.transaction_id || req.query.transaction_id;
-  const amount = req.body.amount || req.query.amount;
+  // Log raw request for debugging
+  console.log("📥 [CALLBACK] Raw request received:");
+  console.log("  - Content-Type:", req.headers['content-type']);
+  console.log("  - req.body:", JSON.stringify(req.body));
+  console.log("  - req.query:", JSON.stringify(req.query));
+  console.log("  - req.rawBody (if available):", typeof req.rawBody !== 'undefined' ? req.rawBody : 'N/A');
 
-  console.log("📥 [CALLBACK] ToyyibPay callback received:", {
+  // Try multiple ways to extract data (ToyyibPay may send in different formats)
+  const statusId = req.body?.statusId || req.body?.StatusId || req.query?.statusId || req.query?.StatusId;
+  const billCode = req.body?.billCode || req.body?.BillCode || req.body?.billcode || req.query?.billCode || req.query?.BillCode;
+  const order_id = req.body?.order_id || req.body?.orderId || req.body?.OrderId || req.query?.order_id;
+  const msg = req.body?.msg || req.body?.Msg || req.body?.message || req.body?.Message || req.query?.msg;
+  const transaction_id = req.body?.transaction_id || req.body?.transactionId || req.body?.TransactionId || req.query?.transaction_id;
+  const amount = req.body?.amount || req.body?.Amount || req.query?.amount;
+
+  console.log("📥 [CALLBACK] Parsed values:", {
     statusId, billCode, order_id, msg, transaction_id, amount
   });
 
-  if (billCode && supabase) {
-    const statusMap = {
-      '1': 'success',
-      '2': 'failed',
-      '3': 'pending'
-    };
-    const normalizedStatus = statusMap[statusId] || 'unknown';
+  // Check if Supabase client is available
+  if (!supabase) {
+    console.error('[PaymentRoutes] Supabase client is not initialized');
+    // Still respond RECEIVEOK to ToyyibPay to avoid retries
+    return res.status(200).send("RECEIVEOK");
+  }
 
-    console.log('[PaymentRoutes] Updating Supabase via callback endpoint:', {
-      billCode,
+  // If billCode is missing, we can't update
+  if (!billCode) {
+    console.warn('[PaymentRoutes] Missing billCode in callback. Cannot update Supabase.');
+    console.warn('[PaymentRoutes] This usually means ToyyibPay sent an empty/invalid callback.');
+    // Still respond RECEIVEOK to avoid retries
+    return res.status(200).send("RECEIVEOK");
+  }
+
+  // Update Supabase
+  const statusMap = {
+    '1': 'success',
+    '2': 'failed',
+    '3': 'pending'
+  };
+  const normalizedStatus = statusMap[statusId] || 'unknown';
+
+  console.log('[PaymentRoutes] Updating Supabase via callback endpoint:', {
+    billCode,
+    status: normalizedStatus,
+    transaction_id
+  });
+
+  const { error: callbackUpdateError } = await supabase
+    .from(SUPABASE_TABLE)
+    .update({
       status: normalizedStatus,
-      transaction_id
-    });
+      message: msg || null,
+      transaction_id: transaction_id || null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('bill_code', billCode);
 
-    const { error: callbackUpdateError } = await supabase
-      .from(SUPABASE_TABLE)
-      .update({
-        status: normalizedStatus,
-        message: msg || null,
-        transaction_id: transaction_id || null,
-        updated_at: new Date().toISOString()
-      })
-      .eq('bill_code', billCode);
-
-    if (callbackUpdateError) {
-      console.error('[PaymentRoutes] Failed to update Supabase on callback:', callbackUpdateError);
-    }
+  if (callbackUpdateError) {
+    console.error('[PaymentRoutes] Failed to update Supabase on callback:', callbackUpdateError);
   } else {
-    console.warn('[PaymentRoutes] Missing billCode or Supabase client during callback update.');
+    console.log('[PaymentRoutes] ✅ Successfully updated Supabase for billCode:', billCode);
   }
 
   // Respond RECEIVEOK to ToyyibPay
