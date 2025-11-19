@@ -51,10 +51,15 @@ const deriveToyyibErrorMessage = (details) => {
  * Create a ToyyibPay bill for a reservation
  */
 router.post('/create', async (req, res) => {
+  const startTime = Date.now();
+  console.log('[PaymentRoutes] 📥 POST /api/payment/create received at', new Date().toISOString());
+  console.log('[PaymentRoutes] Request body:', JSON.stringify(req.body));
+
   try {
     const { reservation_id, name, email, phone, amount, items } = req.body;
 
     if (!reservation_id || !name || !email || !phone || !amount) {
+      console.log('[PaymentRoutes] ❌ Missing required fields');
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: reservation_id, name, email, phone, amount'
@@ -99,6 +104,7 @@ router.post('/create', async (req, res) => {
       items: items || null
     });
 
+    const supabaseInsertStart = Date.now();
     const { data: pendingOrder, error: insertError } = await supabase
       .from(SUPABASE_TABLE)
       .insert({
@@ -114,11 +120,14 @@ router.post('/create', async (req, res) => {
       })
       .select()
       .single();
+    const supabaseInsertTime = Date.now() - supabaseInsertStart;
+    console.log(`[PaymentRoutes] Supabase insert took ${supabaseInsertTime}ms`);
 
     if (insertError) {
       console.error('[PaymentRoutes] Failed to insert pending order into Supabase:', insertError);
-      return res.status(500).json({ success: false, message: 'Failed to store payment record' });
+      return res.status(500).json({ success: false, message: 'Failed to store payment record', details: insertError.message });
     }
+    console.log('[PaymentRoutes] ✅ Supabase insert successful, order ID:', pendingOrder?.id);
 
     const toyyibPayParams = new URLSearchParams({
       userSecretKey: TOYYIBPAY_SECRET_KEY,
@@ -136,11 +145,15 @@ router.post('/create', async (req, res) => {
     });
 
     const toyyibPayUrl = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
+    console.log('[PaymentRoutes] Calling ToyyibPay API:', toyyibPayUrl);
 
+    const toyyibPayStart = Date.now();
     const toyyibPayResponse = await axios.post(toyyibPayUrl, toyyibPayParams.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      timeout: 30000
+      timeout: 25000 // 25 seconds timeout
     });
+    const toyyibPayTime = Date.now() - toyyibPayStart;
+    console.log(`[PaymentRoutes] ToyyibPay API call took ${toyyibPayTime}ms`);
 
     if (!Array.isArray(toyyibPayResponse.data) || !toyyibPayResponse.data[0]?.BillCode) {
       return res.status(500).json({ success: false, message: 'Failed to create ToyyibPay bill' });
@@ -162,11 +175,16 @@ router.post('/create', async (req, res) => {
     if (updateError) {
       console.error('[PaymentRoutes] Failed to update bill code in Supabase:', updateError);
       // Continue even if update fails to avoid blocking payment
+    } else {
+      console.log('[PaymentRoutes] ✅ Bill code updated in Supabase');
     }
 
+    const totalTime = Date.now() - startTime;
+    console.log(`[PaymentRoutes] ✅ Payment bill created successfully in ${totalTime}ms: billCode=${billCode}`);
     return res.status(200).json({ success: true, billCode, paymentUrl });
 
   } catch (error) {
+    const totalTime = Date.now() - startTime;
     const errorDetails = error.response?.data;
     const errorStatus = error.response?.status;
     const friendlyMessage =
@@ -174,11 +192,21 @@ router.post('/create', async (req, res) => {
       error.message ||
       'Failed to create ToyyibPay bill';
 
-    console.error('[PaymentRoutes] ToyyibPay createBill failed', {
+    console.error(`[PaymentRoutes] ❌ ToyyibPay createBill failed after ${totalTime}ms`, {
       status: errorStatus || 'unknown',
       message: error.message,
-      details: errorDetails || null
+      details: errorDetails || null,
+      stack: error.stack
     });
+
+    // If it's a timeout error, provide a more specific message
+    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      return res.status(504).json({
+        success: false,
+        message: 'Request timeout - ToyyibPay API took too long to respond',
+        details: error.message
+      });
+    }
 
     return res.status(500).json({
       success: false,
