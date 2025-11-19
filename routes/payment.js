@@ -252,11 +252,12 @@ router.post('/callback', upload.any(), async (req, res) => {
   console.log("  - req.files (multer):", req.files ? JSON.stringify(req.files) : 'N/A');
 
   // Try multiple ways to extract data (ToyyibPay may send in different formats)
-  const statusId = req.body?.statusId || req.body?.StatusId || req.query?.statusId || req.query?.StatusId;
-  const billCode = req.body?.billCode || req.body?.BillCode || req.body?.billcode || req.query?.billCode || req.query?.BillCode;
-  const order_id = req.body?.order_id || req.body?.orderId || req.body?.OrderId || req.query?.order_id;
-  const msg = req.body?.msg || req.body?.Msg || req.body?.message || req.body?.Message || req.query?.msg;
-  const transaction_id = req.body?.transaction_id || req.body?.transactionId || req.body?.TransactionId || req.query?.transaction_id;
+  // ToyyibPay sends: status_id, status, billcode, transaction_id, etc.
+  const statusId = req.body?.statusId || req.body?.StatusId || req.body?.status_id || req.body?.Status_id || req.body?.status || req.query?.statusId || req.query?.status_id;
+  const billCode = req.body?.billCode || req.body?.BillCode || req.body?.billcode || req.body?.Billcode || req.query?.billCode || req.query?.billcode;
+  const order_id = req.body?.order_id || req.body?.orderId || req.body?.OrderId || req.body?.orderId || req.query?.order_id;
+  const msg = req.body?.msg || req.body?.Msg || req.body?.message || req.body?.Message || req.body?.reason || req.query?.msg;
+  const transaction_id = req.body?.transaction_id || req.body?.transactionId || req.body?.TransactionId || req.body?.refno || req.query?.transaction_id;
   const amount = req.body?.amount || req.body?.Amount || req.query?.amount;
 
   console.log("📥 [CALLBACK] Parsed values:", {
@@ -279,12 +280,14 @@ router.post('/callback', upload.any(), async (req, res) => {
   }
 
   // Update Supabase
+  // Normalize statusId to string (ToyyibPay may send as string "1" or number 1)
+  const statusIdStr = statusId ? String(statusId).trim() : null;
   const statusMap = {
     '1': 'success',
     '2': 'failed',
     '3': 'pending'
   };
-  const normalizedStatus = statusMap[statusId] || 'unknown';
+  const normalizedStatus = statusIdStr ? (statusMap[statusIdStr] || 'unknown') : 'unknown';
 
   console.log('[PaymentRoutes] Updating Supabase via callback endpoint:', {
     billCode,
