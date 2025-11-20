@@ -6,9 +6,29 @@ const router = express.Router();
 const axios = require('axios');
 const path = require('path');
 const multer = require('multer');
+const sql = require('mssql');
 const { supabase } = require('../supabaseClient');
 
 const SUPABASE_TABLE = process.env.SUPABASE_PAYMENT_TABLE || 'payment_orders';
+
+// SQL Server connection config
+const sqlConfig = {
+  server: process.env.SQL_SERVER || '172.20.10.5',
+  port: parseInt(process.env.SQL_PORT || '1433'),
+  database: process.env.SQL_DATABASE || 'OnlinePusaraDB',
+  user: process.env.SQL_USER || 'sa',
+  password: process.env.SQL_PASSWORD || '12345',
+  options: {
+    encrypt: false,
+    trustServerCertificate: true,
+    enableArithAbort: true
+  },
+  pool: {
+    max: 10,
+    min: 0,
+    idleTimeoutMillis: 30000
+  }
+};
 
 // Middleware to parse URL-encoded body (for ToyyibPay return)
 router.use(express.urlencoded({ extended: true }));
@@ -179,6 +199,26 @@ router.post('/create', async (req, res) => {
       console.log('[PaymentRoutes] ✅ Bill code updated in Supabase');
     }
 
+    // Insert into PaymentBillMapping table in SQL Server
+    try {
+      const pool = await sql.connect(sqlConfig);
+      await pool.request()
+        .input('billCode', sql.NVarChar, billCode)
+        .input('reservationId', sql.Int, reservationIdInt)
+        .query(`
+          IF NOT EXISTS (SELECT 1 FROM PaymentBillMapping WHERE bill_code = @billCode)
+          BEGIN
+            INSERT INTO PaymentBillMapping (bill_code, reservation_id, created_at)
+            VALUES (@billCode, @reservationId, GETDATE())
+          END
+        `);
+      console.log('[PaymentRoutes] ✅ PaymentBillMapping updated in SQL Server');
+      await pool.close();
+    } catch (sqlError) {
+      console.error('[PaymentRoutes] Failed to update PaymentBillMapping:', sqlError);
+      // Continue even if SQL update fails - we don't want to block payment creation
+    }
+
     const totalTime = Date.now() - startTime;
     console.log(`[PaymentRoutes] ✅ Payment bill created successfully in ${totalTime}ms: billCode=${billCode}`);
     return res.status(200).json({ success: true, billCode, paymentUrl });
@@ -254,6 +294,64 @@ router.get('/return', async (req, res) => {
     }
   } else {
     console.warn('[PaymentRoutes] Missing billCode or Supabase client during return update.');
+  }
+
+  // Also update SQL Server database if billCode is available
+  if (billCode) {
+    try {
+      const pool = await sql.connect(sqlConfig);
+      const mappingResult = await pool.request()
+        .input('billCode', sql.NVarChar, billCode)
+        .query('SELECT reservation_id FROM PaymentBillMapping WHERE bill_code = @billCode');
+      
+      if (mappingResult.recordset.length > 0) {
+        const reservationId = mappingResult.recordset[0].reservation_id;
+        const statusIdStr = statusId ? String(statusId).trim() : null;
+        
+        // Determine status and payment_status based on statusId
+        let dbStatus = 'pending';
+        let paymentStatus = 'pending';
+        
+        if (statusIdStr === '1') {
+          // Payment successful
+          dbStatus = 'pending';  // Keep status as "pending" (waiting for admin approval)
+          paymentStatus = 'paid';  // Set payment_status to "paid"
+        } else if (statusIdStr === '2') {
+          // Payment failed
+          dbStatus = 'rejected';
+          paymentStatus = 'failed';
+        } else if (statusIdStr === '3') {
+          // Payment pending
+          dbStatus = 'pending';
+          paymentStatus = 'pending';
+        }
+        
+        // Update Reservations table
+        await pool.request()
+          .input('status', sql.NVarChar, dbStatus)
+          .input('paymentStatus', sql.NVarChar, paymentStatus)
+          .input('transactionId', sql.NVarChar, transaction_id || null)
+          .input('reservationId', sql.Int, reservationId)
+          .query(`
+            UPDATE Reservations 
+            SET status = @status, 
+                payment_status = @paymentStatus, 
+                payment_transaction_id = @transactionId, 
+                payment_method = 'ToyyibPay', 
+                payment_date = GETDATE() 
+            WHERE reservation_id = @reservationId
+          `);
+        
+        console.log('[PaymentRoutes] ✅ Successfully updated SQL Server database via return endpoint for reservation_id:', reservationId);
+        await pool.close();
+      } else {
+        console.warn('[PaymentRoutes] No reservation_id found for billCode in return endpoint:', billCode);
+        await pool.close();
+      }
+    } catch (sqlError) {
+      console.error('[PaymentRoutes] Failed to update SQL Server database on return:', sqlError);
+      // Continue even if SQL update fails
+    }
   }
 
   // Respond JSON for Android app
@@ -337,6 +435,65 @@ router.post('/callback', upload.any(), async (req, res) => {
     console.error('[PaymentRoutes] Failed to update Supabase on callback:', callbackUpdateError);
   } else {
     console.log('[PaymentRoutes] ✅ Successfully updated Supabase for billCode:', billCode);
+  }
+
+  // Also update SQL Server database
+  try {
+    // Get reservation_id from PaymentBillMapping table
+    const pool = await sql.connect(sqlConfig);
+    const mappingResult = await pool.request()
+      .input('billCode', sql.NVarChar, billCode)
+      .query('SELECT reservation_id FROM PaymentBillMapping WHERE bill_code = @billCode');
+    
+    if (mappingResult.recordset.length > 0) {
+      const reservationId = mappingResult.recordset[0].reservation_id;
+      
+      // Determine status and payment_status based on statusId
+      let dbStatus = 'pending';
+      let paymentStatus = 'pending';
+      
+      if (statusIdStr === '1') {
+        // Payment successful
+        dbStatus = 'pending';  // Keep status as "pending" (waiting for admin approval)
+        paymentStatus = 'paid';  // Set payment_status to "paid"
+      } else if (statusIdStr === '2') {
+        // Payment failed
+        dbStatus = 'rejected';
+        paymentStatus = 'failed';
+      } else if (statusIdStr === '3') {
+        // Payment pending
+        dbStatus = 'pending';
+        paymentStatus = 'pending';
+      }
+      
+      // Update Reservations table
+      const updateResult = await pool.request()
+        .input('status', sql.NVarChar, dbStatus)
+        .input('paymentStatus', sql.NVarChar, paymentStatus)
+        .input('transactionId', sql.NVarChar, transaction_id || null)
+        .input('reservationId', sql.Int, reservationId)
+        .query(`
+          UPDATE Reservations 
+          SET status = @status, 
+              payment_status = @paymentStatus, 
+              payment_transaction_id = @transactionId, 
+              payment_method = 'ToyyibPay', 
+              payment_date = GETDATE() 
+          WHERE reservation_id = @reservationId
+        `);
+      
+      console.log('[PaymentRoutes] ✅ Successfully updated SQL Server database for reservation_id:', reservationId);
+      console.log('[PaymentRoutes]   - status:', dbStatus);
+      console.log('[PaymentRoutes]   - payment_status:', paymentStatus);
+      
+      await pool.close();
+    } else {
+      console.warn('[PaymentRoutes] No reservation_id found for billCode:', billCode);
+      await pool.close();
+    }
+  } catch (sqlError) {
+    console.error('[PaymentRoutes] Failed to update SQL Server database:', sqlError);
+    // Continue even if SQL update fails - we don't want to block the callback response
   }
 
   // Respond RECEIVEOK to ToyyibPay
