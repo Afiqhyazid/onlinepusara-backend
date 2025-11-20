@@ -380,11 +380,34 @@ router.get('/summary/:reservation_id', async (req, res) => {
       .eq('reservation_id', reservationIdInt)
       .order('created_at', { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
 
+    // Handle case where no payment record exists (old orders before Supabase integration)
     if (error) {
       console.error('[PaymentRoutes] Supabase summary fetch error:', error);
-      return res.status(404).json({ success: false, message: 'Order not found' });
+      return res.status(500).json({ success: false, message: 'Database error', details: error.message });
+    }
+
+    // If no record found, return a default "pending" status (for old orders)
+    if (!data) {
+      console.log('[PaymentRoutes] No payment record found for reservation_id:', reservationIdInt, '- returning default pending status');
+      return res.json({
+        success: true,
+        summary: {
+          reservation_id: reservationIdInt,
+          status: 'pending',
+          amount: null,
+          bill_code: null,
+          transaction_id: null,
+          created_at: null,
+          updated_at: null,
+          name: null,
+          email: null,
+          phone: null,
+          items: null,
+          message: null
+        }
+      });
     }
 
     return res.json({
