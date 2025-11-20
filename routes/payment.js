@@ -10,6 +10,7 @@ const multer = require('multer');
 const { supabase } = require('../supabaseClient');
 
 const SUPABASE_TABLE = process.env.SUPABASE_PAYMENT_TABLE || 'payment_orders';
+const TOMCAT_BASE_URL = process.env.TOMCAT_BASE_URL?.trim();
 
 // Using Supabase as primary storage - no SQL Server connection needed
 
@@ -349,6 +350,50 @@ router.post('/callback', upload.any(), async (req, res) => {
     console.log('[PaymentRoutes] ✅ Successfully updated Supabase for billCode:', billCode);
   }
 
+  // Optional: Sync payment status back to SQL Server via Tomcat JSP for admin reservation page
+  try {
+    if (normalizedStatus === 'success' && TOMCAT_BASE_URL) {
+      // Find reservation_id from Supabase using bill_code
+      const { data: mappingRow, error: mappingError } = await supabase
+        .from(SUPABASE_TABLE)
+        .select('reservation_id')
+        .eq('bill_code', billCode)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (mappingError) {
+        console.error('[PaymentRoutes] Failed to fetch reservation_id for SQL sync:', mappingError);
+      } else if (mappingRow && mappingRow.reservation_id) {
+        const reservationIdForSync = mappingRow.reservation_id;
+        console.log('[PaymentRoutes] Syncing payment status to SQL via JSP for reservation_id:', reservationIdForSync);
+
+        const baseUrl = TOMCAT_BASE_URL.replace(/\/+$/, '');
+        const syncUrl = `${baseUrl}/api/update_payment_status.jsp`;
+
+        // Assuming update_payment_status.jsp expects: reservation_id, status_id (1 = paid)
+        await axios.get(syncUrl, {
+          params: {
+            reservation_id: reservationIdForSync,
+            status_id: 1
+          },
+          timeout: 8000
+        });
+
+        console.log('[PaymentRoutes] ✅ Successfully synced payment status to SQL via JSP');
+      } else {
+        console.warn('[PaymentRoutes] No reservation_id found in Supabase for billCode during SQL sync:', billCode);
+      }
+    } else if (!TOMCAT_BASE_URL) {
+      console.log('[PaymentRoutes] TOMCAT_BASE_URL not set, skipping SQL sync for admin payment status.');
+    }
+  } catch (syncError) {
+    console.error('[PaymentRoutes] Failed to sync payment status to SQL via JSP:', {
+      message: syncError.message,
+      response: syncError.response?.data || null
+    });
+  }
+
   // Supabase is the primary and only storage for payment status
   // No SQL Server sync needed - app/admin should read from Supabase
   console.log('[PaymentRoutes] ✅ Payment status saved to Supabase (primary storage)');
@@ -433,6 +478,70 @@ router.get('/summary/:reservation_id', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch payment summary',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/payment/summaries?ids=1,2,3
+ * Batch fetch payment summaries from Supabase to reduce multiple round-trips
+ */
+router.get('/summaries', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase client is not initialized' });
+    }
+
+    const idsParam = req.query.ids;
+    if (!idsParam || typeof idsParam !== 'string' || !idsParam.trim()) {
+      return res.status(400).json({ success: false, message: 'Reservation ids are required (comma-separated)' });
+    }
+
+    const parsedIds = idsParam
+      .split(',')
+      .map((id) => parseInt(id.trim(), 10))
+      .filter((id) => !Number.isNaN(id) && id > 0);
+
+    if (parsedIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid reservation ids provided' });
+    }
+
+    const uniqueIds = Array.from(new Set(parsedIds));
+
+    const { data, error } = await supabase
+      .from(SUPABASE_TABLE)
+      .select('reservation_id,status')
+      .in('reservation_id', uniqueIds);
+
+    if (error) {
+      console.error('[PaymentRoutes] Supabase batch summary fetch error:', error);
+      return res.status(500).json({ success: false, message: 'Database error', details: error.message });
+    }
+
+    const statuses = {};
+    data?.forEach((row) => {
+      if (row?.reservation_id) {
+        statuses[row.reservation_id] = row.status || 'pending';
+      }
+    });
+
+    // Ensure every requested id exists in response (default pending)
+    uniqueIds.forEach((id) => {
+      if (!statuses[id]) {
+        statuses[id] = 'pending';
+      }
+    });
+
+    return res.json({
+      success: true,
+      statuses
+    });
+  } catch (error) {
+    console.error('[PaymentRoutes] Unexpected error fetching batch summaries:', error.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payment summaries',
       details: error.message
     });
   }
