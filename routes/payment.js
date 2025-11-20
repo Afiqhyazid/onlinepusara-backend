@@ -11,8 +11,8 @@ const { supabase } = require('../supabaseClient');
 
 const SUPABASE_TABLE = process.env.SUPABASE_PAYMENT_TABLE || 'payment_orders';
 
-// SQL Server connection config
-const sqlConfig = {
+// SQL Server connection config (only used when needed, not on startup)
+const getSqlConfig = () => ({
   server: process.env.SQL_SERVER || '172.20.10.5',
   port: parseInt(process.env.SQL_PORT || '1433'),
   database: process.env.SQL_DATABASE || 'OnlinePusaraDB',
@@ -21,14 +21,16 @@ const sqlConfig = {
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    enableArithAbort: true
+    enableArithAbort: true,
+    requestTimeout: 5000, // 5 second timeout
+    connectionTimeout: 5000 // 5 second connection timeout
   },
   pool: {
     max: 10,
     min: 0,
     idleTimeoutMillis: 30000
   }
-};
+});
 
 // Middleware to parse URL-encoded body (for ToyyibPay return)
 router.use(express.urlencoded({ extended: true }));
@@ -199,9 +201,9 @@ router.post('/create', async (req, res) => {
       console.log('[PaymentRoutes] ✅ Bill code updated in Supabase');
     }
 
-    // Insert into PaymentBillMapping table in SQL Server
+    // Insert into PaymentBillMapping table in SQL Server (optional - won't block if it fails)
     try {
-      const pool = await sql.connect(sqlConfig);
+      const pool = await sql.connect(getSqlConfig());
       await pool.request()
         .input('billCode', sql.NVarChar, billCode)
         .input('reservationId', sql.Int, reservationIdInt)
@@ -215,8 +217,9 @@ router.post('/create', async (req, res) => {
       console.log('[PaymentRoutes] ✅ PaymentBillMapping updated in SQL Server');
       await pool.close();
     } catch (sqlError) {
-      console.error('[PaymentRoutes] Failed to update PaymentBillMapping:', sqlError);
+      console.error('[PaymentRoutes] Failed to update PaymentBillMapping:', sqlError.message || sqlError);
       // Continue even if SQL update fails - we don't want to block payment creation
+      // This is optional functionality
     }
 
     const totalTime = Date.now() - startTime;
@@ -296,10 +299,10 @@ router.get('/return', async (req, res) => {
     console.warn('[PaymentRoutes] Missing billCode or Supabase client during return update.');
   }
 
-  // Also update SQL Server database if billCode is available
+  // Also update SQL Server database if billCode is available (optional - won't block if it fails)
   if (billCode) {
     try {
-      const pool = await sql.connect(sqlConfig);
+      const pool = await sql.connect(getSqlConfig());
       const mappingResult = await pool.request()
         .input('billCode', sql.NVarChar, billCode)
         .query('SELECT reservation_id FROM PaymentBillMapping WHERE bill_code = @billCode');
@@ -349,8 +352,8 @@ router.get('/return', async (req, res) => {
         await pool.close();
       }
     } catch (sqlError) {
-      console.error('[PaymentRoutes] Failed to update SQL Server database on return:', sqlError);
-      // Continue even if SQL update fails
+      console.error('[PaymentRoutes] Failed to update SQL Server database on return:', sqlError.message || sqlError);
+      // Continue even if SQL update fails - this is optional functionality
     }
   }
 
@@ -437,10 +440,10 @@ router.post('/callback', upload.any(), async (req, res) => {
     console.log('[PaymentRoutes] ✅ Successfully updated Supabase for billCode:', billCode);
   }
 
-  // Also update SQL Server database
+  // Also update SQL Server database (optional - won't block if it fails)
   try {
     // Get reservation_id from PaymentBillMapping table
-    const pool = await sql.connect(sqlConfig);
+    const pool = await sql.connect(getSqlConfig());
     const mappingResult = await pool.request()
       .input('billCode', sql.NVarChar, billCode)
       .query('SELECT reservation_id FROM PaymentBillMapping WHERE bill_code = @billCode');
@@ -491,10 +494,11 @@ router.post('/callback', upload.any(), async (req, res) => {
       console.warn('[PaymentRoutes] No reservation_id found for billCode:', billCode);
       await pool.close();
     }
-  } catch (sqlError) {
-    console.error('[PaymentRoutes] Failed to update SQL Server database:', sqlError);
-    // Continue even if SQL update fails - we don't want to block the callback response
-  }
+    } catch (sqlError) {
+      console.error('[PaymentRoutes] Failed to update SQL Server database:', sqlError.message || sqlError);
+      // Continue even if SQL update fails - we don't want to block the callback response
+      // This is optional functionality, Supabase update is the primary record
+    }
 
   // Respond RECEIVEOK to ToyyibPay
   res.status(200).send("RECEIVEOK");
